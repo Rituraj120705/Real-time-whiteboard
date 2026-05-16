@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import * as fabric from 'fabric';
-import { 
-  PenTool, Square, Circle, Minus, 
+import {
+  PenTool, Square, Circle, Minus,
   Type, Eraser, Download, Trash2, LogOut,
   Undo2, Redo2, MousePointer2, StickyNote, Image as ImageIcon,
   Home, Mic, MicOff, Users, Wifi, Hand, ZoomIn, ZoomOut
@@ -16,7 +16,7 @@ export default function Whiteboard({ roomData, onLeave }) {
   const canvasRef = useRef(null);
   const fabricRef = useRef(null);
   const socketRef = useRef(null);
-  
+
   const [activeTool, setActiveTool] = useState('pen');
   const [color, setColor] = useState(COLORS[0]);
   const [strokeWidth, setStrokeWidth] = useState(3);
@@ -24,7 +24,7 @@ export default function Whiteboard({ roomData, onLeave }) {
   const [isMicOn, setIsMicOn] = useState(false);
   const [showParticipantsList, setShowParticipantsList] = useState(false);
   const [latency, setLatency] = useState(0);
-  
+
   const localStreamRef = useRef(null);
   const rtcPeersRef = useRef({});
   const audioContextsRef = useRef({});
@@ -35,7 +35,7 @@ export default function Whiteboard({ roomData, onLeave }) {
       { urls: 'stun:stun1.l.google.com:19302' }
     ]
   };
-  
+
   // Refs for closures
   const activeToolRef = useRef(activeTool);
   const colorRef = useRef(color);
@@ -72,14 +72,17 @@ export default function Whiteboard({ roomData, onLeave }) {
       backgroundColor: 'transparent'
     });
     
+    // Set 0,0 to the center of the window so users start together
+    canvas.setViewportTransform([1, 0, 0, 1, window.innerWidth / 2, window.innerHeight / 2]);
+
     // In v6, initialize PencilBrush explicitly
     canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
     canvas.freeDrawingBrush.color = colorRef.current;
     canvas.freeDrawingBrush.width = strokeWidthRef.current;
     fabricRef.current = canvas;
 
-    // Initialize Socket
-    socketRef.current = io(SOCKET_URL);
+    // Initialize Socket and force websocket transport to avoid HTTP polling overhead
+    socketRef.current = io(SOCKET_URL, { transports: ['websocket'] });
     const socket = socketRef.current;
 
     socket.emit('join-room', roomData.roomId, { name: roomData.userName, color: roomData.userColor });
@@ -87,13 +90,13 @@ export default function Whiteboard({ roomData, onLeave }) {
     // Fetch previously saved board state
     fetch(`${SOCKET_URL}/api/boards/${roomData.roomId}`)
       .then(res => {
-         if (!res.ok) throw new Error('Not found');
-         return res.json();
+        if (!res.ok) throw new Error('Not found');
+        return res.json();
       })
       .then(board => {
         if (board && board.canvasState) {
           canvas.loadFromJSON(board.canvasState).then(() => {
-             canvas.requestRenderAll();
+            canvas.requestRenderAll();
           }).catch(console.error);
         }
       })
@@ -173,7 +176,7 @@ export default function Whiteboard({ roomData, onLeave }) {
           // Remove duplicate names
           const duplicateId = Object.keys(newPeers).find(id => newPeers[id].name === peer.name);
           if (duplicateId) delete newPeers[duplicateId];
-          
+
           newPeers[userId] = { x: -100, y: -100, name: peer.name, color: peer.color, latency: peer.latency || 0 };
         });
         return newPeers;
@@ -200,7 +203,7 @@ export default function Whiteboard({ roomData, onLeave }) {
     socket.on('webrtc-signal', async ({ senderId, signalData }) => {
       let pc = rtcPeersRef.current[senderId];
       if (!pc && signalData.type === 'offer') {
-         pc = createPeerConnection(senderId, socket);
+        pc = createPeerConnection(senderId, socket);
       }
       if (!pc) return;
 
@@ -232,13 +235,13 @@ export default function Whiteboard({ roomData, onLeave }) {
           canvas.renderAll();
         }).catch(err => console.error("Enliven error", err));
       } else if (eventData.type === 'object-removed') {
-         // Naive removal by ID (we need to tag objects with IDs)
-         if (eventData.id) {
-           const objToRemove = canvas.getObjects().find(o => o.id === eventData.id);
-           if (objToRemove) canvas.remove(objToRemove);
-         }
+        // Naive removal by ID (we need to tag objects with IDs)
+        if (eventData.id) {
+          const objToRemove = canvas.getObjects().find(o => o.id === eventData.id);
+          if (objToRemove) canvas.remove(objToRemove);
+        }
       } else if (eventData.type === 'clear') {
-         canvas.clear();
+        canvas.clear();
       }
       setTimeout(() => isUpdating.current = false, 50);
     });
@@ -279,16 +282,16 @@ export default function Whiteboard({ roomData, onLeave }) {
 
     // Broadcast Freehand Path
     canvas.on('path:created', (e) => {
-       if (isUpdating.current) return;
-       const obj = e.path;
-       obj.set({ id: Math.random().toString(36).substr(2, 9) }); // add custom id
-       history.current.push(obj);
-       redoStack.current = [];
-       socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: obj.toJSON(['id']) } });
+      if (isUpdating.current) return;
+      const obj = e.path;
+      obj.set({ id: Math.random().toString(36).substr(2, 9) }); // add custom id
+      history.current.push(obj);
+      redoStack.current = [];
+      socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: obj.toJSON(['id']) } });
     });
 
     // Pan & Zoom
-    canvas.on('mouse:wheel', function(opt) {
+    canvas.on('mouse:wheel', function (opt) {
       if (opt.e.ctrlKey) {
         const delta = opt.e.deltaY;
         let zoom = canvas.getZoom();
@@ -298,8 +301,17 @@ export default function Whiteboard({ roomData, onLeave }) {
         canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
       } else {
         const vpt = canvas.viewportTransform;
-        vpt[4] -= opt.e.deltaX;
-        vpt[5] -= opt.e.deltaY;
+        let newX = vpt[4] - opt.e.deltaX;
+        let newY = vpt[5] - opt.e.deltaY;
+        
+        const LIMIT = 3000;
+        if (newX > LIMIT) newX = LIMIT;
+        if (newX < -LIMIT) newX = -LIMIT;
+        if (newY > LIMIT) newY = LIMIT;
+        if (newY < -LIMIT) newY = -LIMIT;
+
+        vpt[4] = newX;
+        vpt[5] = newY;
         canvas.setViewportTransform(vpt);
       }
       opt.e.preventDefault();
@@ -308,171 +320,180 @@ export default function Whiteboard({ roomData, onLeave }) {
 
     // Handle Cursors and Dragging
     canvas.on('mouse:move', (e) => {
-       if (isDraggingCanvas.current) {
-          const vpt = canvas.viewportTransform;
-          vpt[4] += e.e.clientX - lastPosX.current;
-          vpt[5] += e.e.clientY - lastPosY.current;
+      if (isDraggingCanvas.current) {
+        const vpt = canvas.viewportTransform;
+        let newX = vpt[4] + e.e.clientX - lastPosX.current;
+        let newY = vpt[5] + e.e.clientY - lastPosY.current;
+        
+        const LIMIT = 3000;
+        if (newX > LIMIT) newX = LIMIT;
+        if (newX < -LIMIT) newX = -LIMIT;
+        if (newY > LIMIT) newY = LIMIT;
+        if (newY < -LIMIT) newY = -LIMIT;
+
+        vpt[4] = newX;
+        vpt[5] = newY;
+        canvas.requestRenderAll();
+        lastPosX.current = e.e.clientX;
+        lastPosY.current = e.e.clientY;
+        return;
+      }
+
+      const pointer = e.scenePoint || { x: 0, y: 0 };
+      const now = Date.now();
+      // Throttle cursor emit to ~30fps to prevent network lag
+      if (now - lastCursorEmitRef.current > 33) {
+        socket.emit('cursor-move', {
+          roomId: roomData.roomId,
+          cursorData: { x: pointer.x, y: pointer.y, name: roomData.userName, color: roomData.userColor }
+        });
+        lastCursorEmitRef.current = now;
+      }
+
+      const tool = activeToolRef.current;
+
+      // Drag to erase
+      if (tool === 'eraser' && e.e.buttons === 1) {
+        let target = e.target;
+        if (!target) {
+          const pt = new fabric.Point(pointer.x, pointer.y);
+          const objects = canvas.getObjects();
+          for (let i = objects.length - 1; i >= 0; i--) {
+            if (objects[i].containsPoint(pt)) {
+              target = objects[i];
+              break;
+            }
+          }
+        }
+        if (target) {
+          canvas.remove(target);
+          canvas.discardActiveObject();
           canvas.requestRenderAll();
-          lastPosX.current = e.e.clientX;
-          lastPosY.current = e.e.clientY;
-          return;
-       }
+          socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-removed', id: target.id } });
+        }
+        return;
+      }
 
-       const pointer = e.scenePoint || { x: 0, y: 0 };
-       const now = Date.now();
-       // Throttle cursor emit to ~30fps to prevent network lag
-       if (now - lastCursorEmitRef.current > 33) {
-         socket.emit('cursor-move', { 
-           roomId: roomData.roomId, 
-           cursorData: { x: pointer.x, y: pointer.y, name: roomData.userName, color: roomData.userColor }
-         });
-         lastCursorEmitRef.current = now;
-       }
+      // Shape Drawing Logic
+      if (!isDrawingShape.current || tool === 'pen' || tool === 'select' || tool === 'eraser') return;
 
-       const tool = activeToolRef.current;
-
-       // Drag to erase
-       if (tool === 'eraser' && e.e.buttons === 1) {
-          let target = e.target;
-          if (!target) {
-             const pt = new fabric.Point(pointer.x, pointer.y);
-             const objects = canvas.getObjects();
-             for (let i = objects.length - 1; i >= 0; i--) {
-                if (objects[i].containsPoint(pt)) {
-                   target = objects[i];
-                   break;
-                }
-             }
-          }
-          if (target) {
-            canvas.remove(target);
-            canvas.discardActiveObject();
-            canvas.requestRenderAll();
-            socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-removed', id: target.id } });
-          }
-          return;
-       }
-
-       // Shape Drawing Logic
-       if (!isDrawingShape.current || tool === 'pen' || tool === 'select' || tool === 'eraser') return;
-       
-       if (shapeRef.current) {
-         if (tool === 'rect') {
-           shapeRef.current.set({ width: Math.abs(pointer.x - startX.current), height: Math.abs(pointer.y - startY.current) });
-         } else if (tool === 'circle') {
-           const radius = Math.abs(pointer.x - startX.current) / 2;
-           shapeRef.current.set({ radius });
-         } else if (tool === 'line') {
-           shapeRef.current.set({ x2: pointer.x, y2: pointer.y });
-         }
-         canvas.renderAll();
-       }
+      if (shapeRef.current) {
+        if (tool === 'rect') {
+          shapeRef.current.set({ width: Math.abs(pointer.x - startX.current), height: Math.abs(pointer.y - startY.current) });
+        } else if (tool === 'circle') {
+          const radius = Math.abs(pointer.x - startX.current) / 2;
+          shapeRef.current.set({ radius });
+        } else if (tool === 'line') {
+          shapeRef.current.set({ x2: pointer.x, y2: pointer.y });
+        }
+        canvas.renderAll();
+      }
     });
 
     canvas.on('mouse:down', (e) => {
-       const tool = activeToolRef.current;
-       if (e.e.altKey || e.e.button === 1 || tool === 'pan') {
-          isDraggingCanvas.current = true;
-          canvas.selection = false;
-          lastPosX.current = e.e.clientX;
-          lastPosY.current = e.e.clientY;
-          return;
-       }
+      const tool = activeToolRef.current;
+      if (e.e.altKey || e.e.button === 1 || tool === 'pan') {
+        isDraggingCanvas.current = true;
+        canvas.selection = false;
+        lastPosX.current = e.e.clientX;
+        lastPosY.current = e.e.clientY;
+        return;
+      }
 
-       if (tool === 'pen' || tool === 'select') return;
-       
-       const pointer = e.scenePoint || { x: 0, y: 0 };
-       startX.current = pointer.x;
-       startY.current = pointer.y;
+      if (tool === 'pen' || tool === 'select') return;
 
-       if (tool === 'eraser') {
-          let target = e.target;
-          if (!target) {
-             const pt = new fabric.Point(pointer.x, pointer.y);
-             const objects = canvas.getObjects();
-             for (let i = objects.length - 1; i >= 0; i--) {
-                if (objects[i].containsPoint(pt)) {
-                   target = objects[i];
-                   break;
-                }
-             }
+      const pointer = e.scenePoint || { x: 0, y: 0 };
+      startX.current = pointer.x;
+      startY.current = pointer.y;
+
+      if (tool === 'eraser') {
+        let target = e.target;
+        if (!target) {
+          const pt = new fabric.Point(pointer.x, pointer.y);
+          const objects = canvas.getObjects();
+          for (let i = objects.length - 1; i >= 0; i--) {
+            if (objects[i].containsPoint(pt)) {
+              target = objects[i];
+              break;
+            }
           }
+        }
 
-          if (target) {
-            canvas.remove(target);
-            canvas.discardActiveObject();
-            canvas.requestRenderAll();
-            socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-removed', id: target.id } });
-          }
-          return;
-       }
+        if (target) {
+          canvas.remove(target);
+          canvas.discardActiveObject();
+          canvas.requestRenderAll();
+          socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-removed', id: target.id } });
+        }
+        return;
+      }
 
-       if (tool === 'text') {
-         const text = new fabric.IText('Text', {
-           left: pointer.x, top: pointer.y, fill: colorRef.current, fontSize: 24, fontFamily: 'Inter', id: Math.random().toString(36).substr(2, 9)
-         });
-         canvas.add(text);
-         canvas.setActiveObject(text);
-         text.enterEditing();
-         text.selectAll();
-         
-         text.on('editing:exited', () => {
-           socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: text.toJSON(['id']) } });
-           history.current.push(text);
-         });
-         return;
-       }
+      if (tool === 'text') {
+        const text = new fabric.IText('Text', {
+          left: pointer.x, top: pointer.y, fill: colorRef.current, fontSize: 24, fontFamily: 'Inter', id: Math.random().toString(36).substr(2, 9)
+        });
+        canvas.add(text);
+        canvas.setActiveObject(text);
+        text.enterEditing();
+        text.selectAll();
 
-       if (tool === 'sticky') {
-         const stickyColor = colorRef.current === '#f8fafc' ? '#fde047' : colorRef.current;
-         const sticky = new fabric.Textbox('Type here...', {
-           left: pointer.x, top: pointer.y, width: 200, fontSize: 20, fontFamily: 'Inter',
-           fill: '#1e293b', backgroundColor: stickyColor,
-           padding: 15,
-           shadow: new fabric.Shadow({ color: 'rgba(0,0,0,0.3)', blur: 10, offsetX: 5, offsetY: 5 }),
-           id: Math.random().toString(36).substr(2, 9)
-         });
-         canvas.add(sticky);
-         canvas.setActiveObject(sticky);
-         socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: sticky.toJSON(['id']) } });
-         history.current.push(sticky);
-         return;
-       }
+        text.on('editing:exited', () => {
+          socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: text.toJSON(['id']) } });
+          history.current.push(text);
+        });
+        return;
+      }
 
-       isDrawingShape.current = true;
+      if (tool === 'sticky') {
+        const stickyColor = colorRef.current === '#f8fafc' ? '#fde047' : colorRef.current;
+        const sticky = new fabric.Textbox('Type here...', {
+          left: pointer.x, top: pointer.y, width: 200, fontSize: 20, fontFamily: 'Inter',
+          fill: '#1e293b', backgroundColor: stickyColor,
+          padding: 15,
+          shadow: new fabric.Shadow({ color: 'rgba(0,0,0,0.3)', blur: 10, offsetX: 5, offsetY: 5 }),
+          id: Math.random().toString(36).substr(2, 9)
+        });
+        canvas.add(sticky);
+        canvas.setActiveObject(sticky);
+        socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: sticky.toJSON(['id']) } });
+        history.current.push(sticky);
+        return;
+      }
 
-       if (tool === 'rect') {
-         shapeRef.current = new fabric.Rect({ left: startX.current, top: startY.current, width: 0, height: 0, fill: 'transparent', stroke: colorRef.current, strokeWidth: strokeWidthRef.current, selectable: false, evented: true, id: Math.random().toString(36).substr(2, 9) });
-       } else if (tool === 'circle') {
-         // Radius must be > 0 initially in some versions
-         shapeRef.current = new fabric.Circle({ left: startX.current, top: startY.current, radius: 1, fill: 'transparent', stroke: colorRef.current, strokeWidth: strokeWidthRef.current, selectable: false, evented: true, id: Math.random().toString(36).substr(2, 9) });
-       } else if (tool === 'line') {
-         shapeRef.current = new fabric.Line([startX.current, startY.current, startX.current, startY.current], { stroke: colorRef.current, strokeWidth: strokeWidthRef.current, selectable: false, evented: true, id: Math.random().toString(36).substr(2, 9) });
-       }
+      isDrawingShape.current = true;
 
-       if (shapeRef.current) canvas.add(shapeRef.current);
+      if (tool === 'rect') {
+        shapeRef.current = new fabric.Rect({ left: startX.current, top: startY.current, width: 0, height: 0, fill: 'transparent', stroke: colorRef.current, strokeWidth: strokeWidthRef.current, selectable: false, evented: true, id: Math.random().toString(36).substr(2, 9) });
+      } else if (tool === 'circle') {
+        // Radius must be > 0 initially in some versions
+        shapeRef.current = new fabric.Circle({ left: startX.current, top: startY.current, radius: 1, fill: 'transparent', stroke: colorRef.current, strokeWidth: strokeWidthRef.current, selectable: false, evented: true, id: Math.random().toString(36).substr(2, 9) });
+      } else if (tool === 'line') {
+        shapeRef.current = new fabric.Line([startX.current, startY.current, startX.current, startY.current], { stroke: colorRef.current, strokeWidth: strokeWidthRef.current, selectable: false, evented: true, id: Math.random().toString(36).substr(2, 9) });
+      }
+
+      if (shapeRef.current) canvas.add(shapeRef.current);
     });
 
     canvas.on('mouse:up', () => {
-       if (isDraggingCanvas.current) {
-          canvas.setViewportTransform(canvas.viewportTransform);
-          isDraggingCanvas.current = false;
-          canvas.selection = activeToolRef.current === 'select';
-          return;
-       }
+      if (isDraggingCanvas.current) {
+        canvas.setViewportTransform(canvas.viewportTransform);
+        isDraggingCanvas.current = false;
+        canvas.selection = activeToolRef.current === 'select';
+        return;
+      }
 
-       if (isDrawingShape.current && shapeRef.current) {
-         isDrawingShape.current = false;
-         shapeRef.current.setCoords();
-         socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: shapeRef.current.toJSON(['id']) } });
-         history.current.push(shapeRef.current);
-         redoStack.current = [];
-         shapeRef.current = null;
-       }
+      if (isDrawingShape.current && shapeRef.current) {
+        isDrawingShape.current = false;
+        shapeRef.current.setCoords();
+        socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: shapeRef.current.toJSON(['id']) } });
+        history.current.push(shapeRef.current);
+        redoStack.current = [];
+        shapeRef.current = null;
+      }
     });
 
     // Mouse Wheel Zoom
-    canvas.on('mouse:wheel', function(opt) {
+    canvas.on('mouse:wheel', function (opt) {
       var delta = opt.e.deltaY;
       var zoom = canvas.getZoom();
       zoom *= 0.999 ** delta;
@@ -490,27 +511,27 @@ export default function Whiteboard({ roomData, onLeave }) {
       if (file && file.type.startsWith('image/')) {
         const reader = new FileReader();
         reader.onload = (f) => {
-           fabric.Image.fromURL(f.target.result).then((img) => {
-              const maxDim = 500;
-              if (img.width > maxDim || img.height > maxDim) {
-                const scale = Math.min(maxDim / img.width, maxDim / img.height);
-                img.scale(scale);
-              }
-              // Calculate drop position
-              const rect = canvasRef.current.parentElement.getBoundingClientRect();
-              const x = e.clientX - rect.left;
-              const y = e.clientY - rect.top;
-              const vpt = canvas.viewportTransform;
-              const sceneX = (x - vpt[4]) / vpt[0];
-              const sceneY = (y - vpt[5]) / vpt[3];
+          fabric.Image.fromURL(f.target.result).then((img) => {
+            const maxDim = 500;
+            if (img.width > maxDim || img.height > maxDim) {
+              const scale = Math.min(maxDim / img.width, maxDim / img.height);
+              img.scale(scale);
+            }
+            // Calculate drop position
+            const rect = canvasRef.current.parentElement.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const vpt = canvas.viewportTransform;
+            const sceneX = (x - vpt[4]) / vpt[0];
+            const sceneY = (y - vpt[5]) / vpt[3];
 
-              img.set({ left: sceneX, top: sceneY, originX: 'center', originY: 'center', id: Math.random().toString(36).substr(2, 9) });
-              canvas.add(img);
-              canvas.setActiveObject(img);
-              canvas.requestRenderAll();
-              socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: img.toJSON(['id']) } });
-              history.current.push(img);
-           });
+            img.set({ left: sceneX, top: sceneY, originX: 'center', originY: 'center', id: Math.random().toString(36).substr(2, 9) });
+            canvas.add(img);
+            canvas.setActiveObject(img);
+            canvas.requestRenderAll();
+            socket.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: img.toJSON(['id']) } });
+            history.current.push(img);
+          });
         };
         reader.readAsDataURL(file);
       }
@@ -526,7 +547,7 @@ export default function Whiteboard({ roomData, onLeave }) {
         if (audioContextsRef.current[id]) audioContextsRef.current[id].close();
       });
       audioContextsRef.current = {};
-      
+
       Object.values(rtcPeersRef.current).forEach(pc => pc.close());
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => track.stop());
@@ -550,12 +571,12 @@ export default function Whiteboard({ roomData, onLeave }) {
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      
+
       audioContextsRef.current[elementId] = audioContext;
 
       const updateVolume = () => {
         if (!audioContextsRef.current[elementId]) return;
-        
+
         analyser.getByteFrequencyData(dataArray);
         let max = 0;
         for (let i = 0; i < dataArray.length; i++) {
@@ -563,10 +584,10 @@ export default function Whiteboard({ roomData, onLeave }) {
         }
         // max is between 0 and 255
         let volume = Math.min(100, Math.round((max / 255) * 100));
-        
+
         // Add a small noise gate
         if (volume < 5) volume = 0;
-        
+
         const el = document.getElementById(elementId);
         if (el) {
           if (volume > 5) {
@@ -575,12 +596,12 @@ export default function Whiteboard({ roomData, onLeave }) {
             el.style.boxShadow = 'none';
           }
         }
-        
+
         const percentEl = document.getElementById(elementId + '-percent');
         if (percentEl) {
           percentEl.innerText = `${volume}%`;
         }
-        
+
         requestAnimationFrame(updateVolume);
       };
       updateVolume();
@@ -601,12 +622,12 @@ export default function Whiteboard({ roomData, onLeave }) {
   const toggleMic = async () => {
     if (!isMicOn) {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
+        const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true
-          } 
+          }
         });
         localStreamRef.current = stream;
         Object.values(rtcPeersRef.current).forEach(pc => {
@@ -639,17 +660,17 @@ export default function Whiteboard({ roomData, onLeave }) {
   useEffect(() => {
     if (!fabricRef.current) return;
     const canvas = fabricRef.current;
-    
+
     canvas.isDrawingMode = activeTool === 'pen';
     canvas.selection = activeTool === 'select';
-    
+
     canvas.getObjects().forEach(obj => {
-       obj.set('selectable', activeTool === 'select');
-       obj.set('evented', activeTool === 'select' || activeTool === 'eraser');
+      obj.set('selectable', activeTool === 'select');
+      obj.set('evented', activeTool === 'select' || activeTool === 'eraser');
     });
     canvas.discardActiveObject();
     canvas.requestRenderAll();
-    
+
     if (activeTool === 'pen') {
       canvas.freeDrawingBrush.color = color;
       canvas.freeDrawingBrush.width = strokeWidth;
@@ -673,13 +694,13 @@ export default function Whiteboard({ roomData, onLeave }) {
   };
 
   const handleUndo = () => {
-     if (history.current.length === 0) return;
-     const canvas = fabricRef.current;
-     const obj = history.current.pop();
-     redoStack.current.push(obj);
-     canvas.remove(obj);
-     // Currently we don't broadcast undo easily unless we sync whole canvas or send remove by ID.
-     // For this scope, undo applies locally.
+    if (history.current.length === 0) return;
+    const canvas = fabricRef.current;
+    const obj = history.current.pop();
+    redoStack.current.push(obj);
+    canvas.remove(obj);
+    // Currently we don't broadcast undo easily unless we sync whole canvas or send remove by ID.
+    // For this scope, undo applies locally.
   };
 
   const handleImageUpload = (e) => {
@@ -694,30 +715,30 @@ export default function Whiteboard({ roomData, onLeave }) {
           const scale = Math.min(maxDim / img.width, maxDim / img.height);
           img.scale(scale);
         }
-        
+
         const canvas = fabricRef.current;
         const vpt = canvas.viewportTransform;
         const centerX = (window.innerWidth / 2 - vpt[4]) / vpt[0];
         const centerY = (window.innerHeight / 2 - vpt[5]) / vpt[3];
-        
+
         img.set({
-           left: centerX,
-           top: centerY,
-           originX: 'center',
-           originY: 'center',
-           id: Math.random().toString(36).substr(2, 9)
+          left: centerX,
+          top: centerY,
+          originX: 'center',
+          originY: 'center',
+          id: Math.random().toString(36).substr(2, 9)
         });
 
         canvas.add(img);
         canvas.setActiveObject(img);
         canvas.requestRenderAll();
-        
+
         socketRef.current.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: img.toJSON(['id']) } });
         history.current.push(img);
       }).catch(err => console.error("Error loading image", err));
     };
     reader.readAsDataURL(file);
-    e.target.value = ''; 
+    e.target.value = '';
   };
 
   const saveAndLeave = () => {
@@ -726,15 +747,15 @@ export default function Whiteboard({ roomData, onLeave }) {
       // create low-res thumbnail
       const thumbnail = canvas.toDataURL({ format: 'png', quality: 0.5, multiplier: 0.2 });
       const canvasState = canvas.toJSON(['id']);
-      
+
       fetch('http://localhost:5000/api/boards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-           roomId: roomData.roomId,
-           name: roomData.roomId + " Board",
-           canvasState,
-           thumbnail
+          roomId: roomData.roomId,
+          name: roomData.roomId + " Board",
+          canvasState,
+          thumbnail
         })
       }).then(() => onLeave()).catch(() => onLeave());
     } else {
@@ -834,12 +855,12 @@ export default function Whiteboard({ roomData, onLeave }) {
         <button className={`tool-btn ${activeTool === 'sticky' ? 'active' : ''}`} onClick={() => setActiveTool('sticky')} title="Sticky Note"><StickyNote size={20} /></button>
         <button className={`tool-btn ${activeTool === 'text' ? 'active' : ''}`} onClick={() => setActiveTool('text')} title="Text"><Type size={20} /></button>
         <button className={`tool-btn ${activeTool === 'eraser' ? 'active' : ''}`} onClick={() => setActiveTool('eraser')} title="Eraser"><Eraser size={20} /></button>
-        
+
         <div style={{ height: '1px', background: 'var(--panel-border)', margin: '0.5rem 0' }}></div>
-        
+
         <button className="tool-btn" onClick={handleUndo} title="Undo"><Undo2 size={20} /></button>
         {/* Redo could be added here */}
-        
+
         <div style={{ height: '1px', background: 'var(--panel-border)', margin: '0.5rem 0' }}></div>
 
         <button className="tool-btn" onClick={() => document.getElementById('image-upload').click()} title="Upload Image"><ImageIcon size={20} /></button>
@@ -851,19 +872,19 @@ export default function Whiteboard({ roomData, onLeave }) {
       <div className="properties-panel glass-panel">
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {COLORS.map(c => (
-            <div 
-              key={c} 
-              className={`color-swatch ${color === c ? 'active' : ''}`} 
-              style={{ backgroundColor: c }} 
+            <div
+              key={c}
+              className={`color-swatch ${color === c ? 'active' : ''}`}
+              style={{ backgroundColor: c }}
               onClick={() => setColor(c)}
             />
           ))}
         </div>
         <div style={{ width: '1px', height: '24px', background: 'var(--panel-border)', margin: '0 0.5rem' }}></div>
-        <input 
-          type="range" 
-          min="1" max="20" 
-          value={strokeWidth} 
+        <input
+          type="range"
+          min="1" max="20"
+          value={strokeWidth}
           onChange={(e) => setStrokeWidth(parseInt(e.target.value))}
           style={{ width: '100px' }}
         />
