@@ -50,6 +50,22 @@ io.on('connection', (socket) => {
     socket.userDetails = userDetails; // { name, color }
     console.log(`User ${socket.id} (${userDetails?.name}) joined room: ${roomId}`);
     
+    // Get existing users in room
+    const clients = io.sockets.adapter.rooms.get(roomId);
+    const existingPeers = {};
+    if (clients) {
+      for (const clientId of clients) {
+        if (clientId !== socket.id) {
+          const clientSocket = io.sockets.sockets.get(clientId);
+          if (clientSocket && clientSocket.userDetails) {
+            existingPeers[clientId] = clientSocket.userDetails;
+          }
+        }
+      }
+    }
+    // send existing users to the joined user
+    socket.emit('room-users', existingPeers);
+
     // Notify others in room
     socket.to(roomId).emit('user-joined', { userId: socket.id, ...userDetails });
   });
@@ -75,6 +91,17 @@ io.on('connection', (socket) => {
       senderId: socket.id, 
       signalData 
     });
+  });
+
+  socket.on('ping', (cb) => {
+    if (typeof cb === 'function') cb();
+  });
+
+  socket.on('update-latency', ({ roomId, latency }) => {
+    if (socket.userDetails) {
+      socket.userDetails.latency = latency;
+    }
+    socket.to(roomId).emit('peer-latency', { userId: socket.id, latency });
   });
 
   socket.on('clear-board', (roomId) => {

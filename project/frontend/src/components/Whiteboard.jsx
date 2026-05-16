@@ -5,7 +5,7 @@ import {
   PenTool, Square, Circle, Minus, 
   Type, Eraser, Download, Trash2, LogOut,
   Undo2, Redo2, MousePointer2, StickyNote, Image as ImageIcon,
-  Home, Mic, MicOff
+  Home, Mic, MicOff, Users, Wifi, Hand, ZoomIn, ZoomOut
 } from 'lucide-react';
 
 // Connect to backend server on port 5000 or relative if deployed
@@ -22,9 +22,12 @@ export default function Whiteboard({ roomData, onLeave }) {
   const [strokeWidth, setStrokeWidth] = useState(3);
   const [peers, setPeers] = useState({});
   const [isMicOn, setIsMicOn] = useState(false);
+  const [showParticipantsList, setShowParticipantsList] = useState(false);
+  const [latency, setLatency] = useState(0);
   
   const localStreamRef = useRef(null);
   const rtcPeersRef = useRef({});
+  const audioContextsRef = useRef({});
 
   const ICE_SERVERS = {
     iceServers: [
@@ -37,6 +40,7 @@ export default function Whiteboard({ roomData, onLeave }) {
   const activeToolRef = useRef(activeTool);
   const colorRef = useRef(color);
   const strokeWidthRef = useRef(strokeWidth);
+  const lastCursorEmitRef = useRef(0);
 
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
   useEffect(() => { colorRef.current = color; }, [color]);
@@ -137,6 +141,7 @@ export default function Whiteboard({ roomData, onLeave }) {
           document.body.appendChild(audio);
         }
         audio.srcObject = event.streams[0];
+        monitorAudio(event.streams[0], `audio-indicator-${targetId}`);
       };
 
       return pc;
@@ -144,10 +149,53 @@ export default function Whiteboard({ roomData, onLeave }) {
 
     // Socket Listeners
     socket.on('user-joined', (user) => {
+      setPeers(prev => {
+        const newPeers = { ...prev };
+        // Remove any existing peer with the same name to prevent duplicates
+        Object.keys(newPeers).forEach(id => {
+          if (newPeers[id].name === user.name) {
+            delete newPeers[id];
+          }
+        });
+        newPeers[user.userId] = { x: -100, y: -100, name: user.name, color: user.color, latency: 0 };
+        return newPeers;
+      });
       // Don't manually create offer here anymore, creating connection and adding tracks 
       // will trigger onnegotiationneeded.
       createPeerConnection(user.userId, socket);
     });
+
+    socket.on('room-users', (existingPeers) => {
+      setPeers(prev => {
+        const newPeers = { ...prev };
+        Object.keys(existingPeers).forEach(userId => {
+          const peer = existingPeers[userId];
+          // Remove duplicate names
+          const duplicateId = Object.keys(newPeers).find(id => newPeers[id].name === peer.name);
+          if (duplicateId) delete newPeers[duplicateId];
+          
+          newPeers[userId] = { x: -100, y: -100, name: peer.name, color: peer.color, latency: peer.latency || 0 };
+        });
+        return newPeers;
+      });
+    });
+
+    socket.on('peer-latency', ({ userId, latency: peerLatency }) => {
+      setPeers(prev => {
+        if (!prev[userId]) return prev;
+        return { ...prev, [userId]: { ...prev[userId], latency: peerLatency } };
+      });
+    });
+
+    // Ping mechanism for latency
+    const pingInterval = setInterval(() => {
+      const start = Date.now();
+      socket.emit('ping', () => {
+        const duration = Date.now() - start;
+        setLatency(duration);
+        socket.emit('update-latency', { roomId: roomData.roomId, latency: duration });
+      });
+    }, 3000);
 
     socket.on('webrtc-signal', async ({ senderId, signalData }) => {
       let pc = rtcPeersRef.current[senderId];
@@ -214,6 +262,7 @@ export default function Whiteboard({ roomData, onLeave }) {
       }
       const audio = document.getElementById(`audio-${userId}`);
       if (audio) audio.remove();
+      stopMonitorAudio(`audio-indicator-${userId}`);
     });
 
     socket.on('clear-board', () => {
@@ -270,10 +319,15 @@ export default function Whiteboard({ roomData, onLeave }) {
        }
 
        const pointer = e.scenePoint || { x: 0, y: 0 };
-       socket.emit('cursor-move', { 
-         roomId: roomData.roomId, 
-         cursorData: { x: pointer.x, y: pointer.y, name: roomData.userName, color: roomData.userColor }
-       });
+       const now = Date.now();
+       // Throttle cursor emit to ~30fps to prevent network lag
+       if (now - lastCursorEmitRef.current > 33) {
+         socket.emit('cursor-move', { 
+           roomId: roomData.roomId, 
+           cursorData: { x: pointer.x, y: pointer.y, name: roomData.userName, color: roomData.userColor }
+         });
+         lastCursorEmitRef.current = now;
+       }
 
        const tool = activeToolRef.current;
 
@@ -316,7 +370,8 @@ export default function Whiteboard({ roomData, onLeave }) {
     });
 
     canvas.on('mouse:down', (e) => {
-       if (e.e.altKey || e.e.button === 1) {
+       const tool = activeToolRef.current;
+       if (e.e.altKey || e.e.button === 1 || tool === 'pan') {
           isDraggingCanvas.current = true;
           canvas.selection = false;
           lastPosX.current = e.e.clientX;
@@ -324,7 +379,6 @@ export default function Whiteboard({ roomData, onLeave }) {
           return;
        }
 
-       const tool = activeToolRef.current;
        if (tool === 'pen' || tool === 'select') return;
        
        const pointer = e.scenePoint || { x: 0, y: 0 };
@@ -417,6 +471,18 @@ export default function Whiteboard({ roomData, onLeave }) {
        }
     });
 
+    // Mouse Wheel Zoom
+    canvas.on('mouse:wheel', function(opt) {
+      var delta = opt.e.deltaY;
+      var zoom = canvas.getZoom();
+      zoom *= 0.999 ** delta;
+      if (zoom > 5) zoom = 5;
+      if (zoom < 0.1) zoom = 0.1;
+      canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+      opt.e.preventDefault();
+      opt.e.stopPropagation();
+    });
+
     // Drag & Drop Image
     const handleDrop = (e) => {
       e.preventDefault();
@@ -456,6 +522,11 @@ export default function Whiteboard({ roomData, onLeave }) {
     canvasWrapper.addEventListener('dragover', handleDragOver);
 
     return () => {
+      Object.keys(audioContextsRef.current).forEach(id => {
+        if (audioContextsRef.current[id]) audioContextsRef.current[id].close();
+      });
+      audioContextsRef.current = {};
+      
       Object.values(rtcPeersRef.current).forEach(pc => pc.close());
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach(track => track.stop());
@@ -465,20 +536,84 @@ export default function Whiteboard({ roomData, onLeave }) {
         canvasWrapper.removeEventListener('drop', handleDrop);
         canvasWrapper.removeEventListener('dragover', handleDragOver);
       }
+      clearInterval(pingInterval);
       socket.disconnect();
       canvas.dispose();
     };
   }, [roomData.roomId]);
 
+  const monitorAudio = (stream, elementId) => {
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      audioContextsRef.current[elementId] = audioContext;
+
+      const updateVolume = () => {
+        if (!audioContextsRef.current[elementId]) return;
+        
+        analyser.getByteFrequencyData(dataArray);
+        let max = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          if (dataArray[i] > max) max = dataArray[i];
+        }
+        // max is between 0 and 255
+        let volume = Math.min(100, Math.round((max / 255) * 100));
+        
+        // Add a small noise gate
+        if (volume < 5) volume = 0;
+        
+        const el = document.getElementById(elementId);
+        if (el) {
+          if (volume > 5) {
+            el.style.boxShadow = `0 0 0 ${volume / 5}px rgba(34, 197, 94, 0.6)`;
+          } else {
+            el.style.boxShadow = 'none';
+          }
+        }
+        
+        const percentEl = document.getElementById(elementId + '-percent');
+        if (percentEl) {
+          percentEl.innerText = `${volume}%`;
+        }
+        
+        requestAnimationFrame(updateVolume);
+      };
+      updateVolume();
+    } catch (e) {
+      console.error("Audio API error:", e);
+    }
+  };
+
+  const stopMonitorAudio = (elementId) => {
+    if (audioContextsRef.current[elementId]) {
+      audioContextsRef.current[elementId].close();
+      delete audioContextsRef.current[elementId];
+    }
+    const el = document.getElementById(elementId);
+    if (el) el.style.boxShadow = 'none';
+  };
+
   const toggleMic = async () => {
     if (!isMicOn) {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        });
         localStreamRef.current = stream;
         Object.values(rtcPeersRef.current).forEach(pc => {
           stream.getTracks().forEach(track => pc.addTrack(track, stream));
         });
         setIsMicOn(true);
+        monitorAudio(stream, 'audio-indicator-local');
       } catch (err) {
         console.error("Mic access denied", err);
         alert("Microphone access is required for voice chat.");
@@ -496,6 +631,7 @@ export default function Whiteboard({ roomData, onLeave }) {
         localStreamRef.current = null;
       }
       setIsMicOn(false);
+      stopMonitorAudio('audio-indicator-local');
     }
   };
 
@@ -606,6 +742,30 @@ export default function Whiteboard({ roomData, onLeave }) {
     }
   };
 
+  const getLatencyColor = (ms) => {
+    if (ms === 0) return 'var(--text-muted)';
+    if (ms < 80) return '#22c55e'; // Green
+    if (ms < 200) return '#eab308'; // Yellow
+    return '#ef4444'; // Red
+  };
+
+  const handleZoomIn = () => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    let zoom = canvas.getZoom() * 1.2;
+    if (zoom > 5) zoom = 5;
+    canvas.zoomToPoint({ x: canvas.width / 2, y: canvas.height / 2 }, zoom);
+  };
+
+  const handleZoomOut = () => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    let zoom = canvas.getZoom() / 1.2;
+    if (zoom < 0.1) zoom = 0.1;
+    canvas.zoomToPoint({ x: canvas.width / 2, y: canvas.height / 2 }, zoom);
+  };
+
+
   return (
     <div className="canvas-wrapper">
       <div className="header glass-panel">
@@ -620,6 +780,43 @@ export default function Whiteboard({ roomData, onLeave }) {
           <button className="btn-secondary" onClick={saveAndLeave} style={{ padding: '0.5rem 1rem', borderRadius: '9999px', display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', color: 'var(--text-main)' }} title="Return to Dashboard">
             <Home size={16} /> Home
           </button>
+          <div style={{ position: 'relative' }}>
+            <div onClick={() => setShowParticipantsList(!showParticipantsList)} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.75rem', background: 'rgba(0,0,0,0.5)', borderRadius: '9999px', border: '1px solid var(--panel-border)', color: 'var(--text-main)', cursor: 'pointer' }} title="View Participants">
+              <Users size={16} />
+              <span style={{ fontWeight: 600 }}>{Object.keys(peers).length + 1}</span>
+            </div>
+            {showParticipantsList && (
+              <div className="glass-panel" style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.5rem', padding: '1rem', borderRadius: '1rem', minWidth: '220px', zIndex: 100, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div style={{ fontWeight: 600, borderBottom: '1px solid var(--panel-border)', paddingBottom: '0.5rem', marginBottom: '0.5rem' }}>Participants ({Object.keys(peers).length + 1})</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span id="audio-indicator-local" style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: roomData.userColor, transition: 'box-shadow 0.1s' }}></span>
+                    <span style={{ fontWeight: 500 }}>{roomData.userName} (You)</span>
+                    <span id="audio-indicator-local-percent" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>0%</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem', color: getLatencyColor(latency) }}>
+                    <Wifi size={14} /> {latency > 0 ? `${latency}ms` : '...'}
+                  </div>
+                </div>
+                {Object.entries(peers).map(([peerId, p]) => (
+                  <div key={peerId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span id={`audio-indicator-${peerId}`} style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: p.color, transition: 'box-shadow 0.1s' }}></span>
+                      <span>{p.name}</span>
+                      <span id={`audio-indicator-${peerId}-percent`} style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>0%</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem', color: getLatencyColor(p.latency || 0) }}>
+                      <Wifi size={14} /> {(p.latency && p.latency > 0) ? `${p.latency}ms` : '...'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.75rem', background: 'rgba(0,0,0,0.5)', borderRadius: '9999px', border: '1px solid var(--panel-border)' }}>
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: roomData.userColor }}></span>
+            <span style={{ fontWeight: 600 }}>{roomData.userName}</span>
+          </span>
           <span>Room: <span className="room-code">{roomData.roomId}</span></span>
           <button className="btn danger" onClick={saveAndLeave}>
             <LogOut size={16} /> Save & Leave
@@ -629,6 +826,7 @@ export default function Whiteboard({ roomData, onLeave }) {
 
       <div className="toolbar glass-panel">
         <button className={`tool-btn ${activeTool === 'select' ? 'active' : ''}`} onClick={() => setActiveTool('select')} title="Select"><MousePointer2 size={20} /></button>
+        <button className={`tool-btn ${activeTool === 'pan' ? 'active' : ''}`} onClick={() => setActiveTool('pan')} title="Pan"><Hand size={20} /></button>
         <button className={`tool-btn ${activeTool === 'pen' ? 'active' : ''}`} onClick={() => setActiveTool('pen')} title="Pen"><PenTool size={20} /></button>
         <button className={`tool-btn ${activeTool === 'rect' ? 'active' : ''}`} onClick={() => setActiveTool('rect')} title="Rectangle"><Square size={20} /></button>
         <button className={`tool-btn ${activeTool === 'circle' ? 'active' : ''}`} onClick={() => setActiveTool('circle')} title="Circle"><Circle size={20} /></button>
@@ -680,6 +878,16 @@ export default function Whiteboard({ roomData, onLeave }) {
           <div className="cursor-name" style={{ backgroundColor: peer.color }}>{peer.name}</div>
         </div>
       ))}
+
+      {/* Zoom Controls */}
+      <div className="glass-panel" style={{ position: 'absolute', bottom: '2rem', right: '2rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem', borderRadius: '1rem', zIndex: 50 }}>
+        <button className="btn-secondary" onClick={handleZoomIn} style={{ padding: '0.5rem', borderRadius: '0.5rem', cursor: 'pointer', color: 'var(--text-main)', border: 'none', background: 'transparent' }} title="Zoom In">
+          <ZoomIn size={20} />
+        </button>
+        <button className="btn-secondary" onClick={handleZoomOut} style={{ padding: '0.5rem', borderRadius: '0.5rem', cursor: 'pointer', color: 'var(--text-main)', border: 'none', background: 'transparent' }} title="Zoom Out">
+          <ZoomOut size={20} />
+        </button>
+      </div>
     </div>
   );
 }
