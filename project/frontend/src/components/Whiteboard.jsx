@@ -325,12 +325,27 @@ export default function Whiteboard({ roomData, onLeave }) {
       opt.e.stopPropagation();
     });
 
+    // Helper to get reliable coordinates for panning (handles both mouse and touch)
+    const getViewportCoords = (opt) => {
+      if (opt.viewportPoint) {
+        return { x: opt.viewportPoint.x, y: opt.viewportPoint.y };
+      }
+      if (opt.e.touches && opt.e.touches.length > 0) {
+        return { x: opt.e.touches[0].clientX, y: opt.e.touches[0].clientY };
+      }
+      if (opt.e.changedTouches && opt.e.changedTouches.length > 0) {
+        return { x: opt.e.changedTouches[0].clientX, y: opt.e.changedTouches[0].clientY };
+      }
+      return { x: opt.e.clientX || 0, y: opt.e.clientY || 0 };
+    };
+
     // Handle Cursors and Dragging
     canvas.on('mouse:move', (e) => {
       if (isDraggingCanvas.current) {
+        const coords = getViewportCoords(e);
         const vpt = canvas.viewportTransform;
-        let newX = vpt[4] + e.e.clientX - lastPosX.current;
-        let newY = vpt[5] + e.e.clientY - lastPosY.current;
+        let newX = vpt[4] + coords.x - lastPosX.current;
+        let newY = vpt[5] + coords.y - lastPosY.current;
         
         const LIMIT = 3000;
         if (newX > LIMIT) newX = LIMIT;
@@ -341,8 +356,8 @@ export default function Whiteboard({ roomData, onLeave }) {
         vpt[4] = newX;
         vpt[5] = newY;
         canvas.requestRenderAll();
-        lastPosX.current = e.e.clientX;
-        lastPosY.current = e.e.clientY;
+        lastPosX.current = coords.x;
+        lastPosY.current = coords.y;
         return;
       }
 
@@ -402,8 +417,9 @@ export default function Whiteboard({ roomData, onLeave }) {
       if (e.e.altKey || e.e.button === 1 || tool === 'pan') {
         isDraggingCanvas.current = true;
         canvas.selection = false;
-        lastPosX.current = e.e.clientX;
-        lastPosY.current = e.e.clientY;
+        const coords = getViewportCoords(e);
+        lastPosX.current = coords.x;
+        lastPosY.current = coords.y;
         return;
       }
 
