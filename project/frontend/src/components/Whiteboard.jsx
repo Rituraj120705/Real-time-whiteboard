@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import * as fabric from 'fabric';
+import * as pdfjsLib from 'pdfjs-dist';
 import {
   PenTool, Square, Circle, Minus,
   Type, Eraser, Download, Trash2, LogOut,
   Undo2, Redo2, MousePointer2, StickyNote, Image as ImageIcon,
-  Home, Mic, MicOff, Users, Wifi, Hand, ZoomIn, ZoomOut
+  Home, Mic, MicOff, Users, Wifi, Hand, ZoomIn, ZoomOut, FileText
 } from 'lucide-react';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.js',
+  import.meta.url
+).toString();
 
 // Connect to backend server on port 5000 or relative if deployed
 const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
@@ -24,6 +30,7 @@ export default function Whiteboard({ roomData, onLeave }) {
   const [isMicOn, setIsMicOn] = useState(false);
   const [showParticipantsList, setShowParticipantsList] = useState(false);
   const [latency, setLatency] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
 
   const localStreamRef = useRef(null);
   const rtcPeersRef = useRef({});
@@ -741,6 +748,75 @@ export default function Whiteboard({ roomData, onLeave }) {
     e.target.value = '';
   };
 
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || file.type !== 'application/pdf') return;
+    
+    setIsUploading(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+      
+      const canvas = fabricRef.current;
+      const vpt = canvas.viewportTransform;
+      const startX = (window.innerWidth / 2 - vpt[4]) / vpt[0];
+      let currentY = (window.innerHeight / 2 - vpt[5]) / vpt[3];
+      
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 1.5 });
+        
+        const offscreenCanvas = document.createElement('canvas');
+        const context = offscreenCanvas.getContext('2d');
+        offscreenCanvas.height = viewport.height;
+        offscreenCanvas.width = viewport.width;
+        
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+        
+        const blob = await new Promise(resolve => offscreenCanvas.toBlob(resolve, 'image/png'));
+        
+        const formData = new FormData();
+        formData.append('file', blob, `page-${i}.png`);
+        
+        const response = await fetch(`${SOCKET_URL}/api/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        
+        await new Promise(resolve => {
+          fabric.Image.fromURL(data.url).then((img) => {
+            img.set({
+              left: startX,
+              top: currentY,
+              originX: 'center',
+              originY: 'top',
+              id: Math.random().toString(36).substr(2, 9)
+            });
+            
+            canvas.add(img);
+            canvas.requestRenderAll();
+            
+            socketRef.current.emit('draw-event', { roomId: roomData.roomId, eventData: { type: 'object-added', object: img.toJSON(['id']) } });
+            history.current.push(img);
+            
+            currentY += viewport.height + 20; // Space between pages
+            resolve();
+          }).catch(err => {
+            console.error("Error loading PDF image", err);
+            resolve();
+          });
+        });
+      }
+    } catch (err) {
+      console.error("Error processing PDF:", err);
+      alert(`Failed to process PDF: ${err.message || err}`);
+    } finally {
+      setIsUploading(false);
+      e.target.value = '';
+    }
+  };
+
   const saveAndLeave = () => {
     const canvas = fabricRef.current;
     if (canvas) {
@@ -865,6 +941,10 @@ export default function Whiteboard({ roomData, onLeave }) {
 
         <button className="tool-btn" onClick={() => document.getElementById('image-upload').click()} title="Upload Image"><ImageIcon size={20} /></button>
         <input type="file" id="image-upload" style={{ display: 'none' }} accept="image/*" onChange={handleImageUpload} />
+        <button className="tool-btn" style={{ opacity: isUploading ? 0.5 : 1 }} onClick={() => document.getElementById('pdf-upload').click()} title={isUploading ? "Uploading PDF..." : "Upload PDF"} disabled={isUploading}>
+          <FileText size={20} />
+        </button>
+        <input type="file" id="pdf-upload" style={{ display: 'none' }} accept="application/pdf" onChange={handlePdfUpload} />
         <button className="tool-btn" onClick={handleDownload} title="Download PNG"><Download size={20} /></button>
         <button className="tool-btn" onClick={handleClear} title="Clear Board" style={{ color: 'var(--danger)' }}><Trash2 size={20} /></button>
       </div>

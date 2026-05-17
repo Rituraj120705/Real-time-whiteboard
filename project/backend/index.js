@@ -8,6 +8,29 @@ const { createAdapter } = require('@socket.io/redis-adapter');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.set('trust proxy', 1);
+
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir)
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9)
+    cb(null, uniqueSuffix + '-' + file.originalname)
+  }
+});
+const upload = multer({ storage: storage });
+
+app.use('/uploads', express.static(uploadsDir));
 
 // In-memory Database for Boards (Phase 3 Placeholder)
 const boardsDB = [];
@@ -119,6 +142,14 @@ io.on('connection', (socket) => {
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
 // Dashboard APIs
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+  const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+  res.json({ url: fileUrl });
+});
+
 app.post('/api/boards', (req, res) => {
   const { roomId, name, canvasState, thumbnail } = req.body;
   if (!roomId) return res.status(400).json({ error: 'roomId required' });
